@@ -59,7 +59,7 @@ const KNOCK_FRAMES = 30;
 
 let won = false;
 
-let ground, groundDeep, platformsL, platformsR, wallsL, wallsR;
+let ground, groundDeep, platformsL, platformsR, wallsL, wallsR, ceiling;
 let groundTileImg, groundTileDeepImg, platformLCImg, platformRCImg, wallLImg, wallRImg;
 
 let bgLayers = [];
@@ -143,7 +143,12 @@ const level2 = [
   "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", // row 12
 ];
 
-const levels = [level1, level2];
+function normalizeLevelRows(tileMap) {
+  const width = Math.max(...tileMap.map((row) => row.length));
+  return tileMap.map((row) => row.padEnd(width, " "));
+}
+
+const levels = [normalizeLevelRows(level1), normalizeLevelRows(level2)];
 let currentLevelIndex = 0;
 let level = levels[currentLevelIndex];
 let levelTarget = 0;
@@ -166,15 +171,11 @@ const COLLECT_FRAMES = 10;
 const COLLECT_IDLE_ROW = 0;
 const COLLECT_PICKUP_ROW = 1;
 
-const LEVELW = TILE_W * level[0].length;
-const LEVELH = TILE_H * level.length;
-
 const VIEWTILE_W = 10;
 const VIEWTILE_H = 8;
 const VIEWW = TILE_W * VIEWTILE_W;
 const VIEWH = TILE_H * VIEWTILE_H;
-
-const PLAYER_START_Y = LEVELH - TILE_H * 4;
+const CEILING_Y = -VIEWH / 2;
 
 // player damage knockback tuning
 const PLAYER_KNOCKBACK_X = 2.0;
@@ -219,6 +220,14 @@ const FONT_CHARS =
 
 // gravity
 const GRAVITY = 10;
+const MOON_GRAVITY = 1.6;
+
+const debugState = {
+  enabled: false,
+  moonGravity: false,
+  invincible: false,
+  showProbes: false,
+};
 
 // --- TILE HELPERS (only what we actually need) ---
 function tileAt(col, row) {
@@ -233,6 +242,10 @@ function levelWidth() {
 
 function levelHeight() {
   return TILE_H * level.length;
+}
+
+function playerStartY() {
+  return levelHeight() - TILE_H * 4;
 }
 
 function countTiles(tileMap, key) {
@@ -312,10 +325,12 @@ function setup() {
 
 function draw() {
   background(69, 61, 79);
+  handleDebugInput();
 
   // level select screen (before world is built)
   if (selectingLevel) {
     drawLevelSelect();
+    drawDebugOverlay();
     if (kb.presses("1")) beginSelectedLevel(0);
     if (kb.presses("2") && levels.length >= 2) beginSelectedLevel(1);
     return;
@@ -446,7 +461,7 @@ function draw() {
   // --- FALL RESET (alive only) ---
   if (!dead && player.y > curLevelH + TILE_H * 3) {
     player.x = FRAME_W;
-    player.y = PLAYER_START_Y;
+    player.y = playerStartY();
     player.vel.x = 0;
     player.vel.y = 0;
   }
@@ -534,6 +549,8 @@ function draw() {
   if (dead) drawDeathOverlay();
   if (won) drawWinOverlay();
 
+  drawDebugOverlay();
+
   // accept R to restart the game if player wins or dies
   if ((dead || won) && kb.presses("r")) restartGame();
 }
@@ -600,6 +617,75 @@ function redrawHUD() {
   }
 }
 
+function handleDebugInput() {
+  if (kb.presses("`")) debugState.enabled = !debugState.enabled;
+
+  if (kb.presses("g")) {
+    debugState.moonGravity = !debugState.moonGravity;
+    applyGravityMode();
+  }
+
+  if (kb.presses("i")) debugState.invincible = !debugState.invincible;
+
+  if (kb.presses("p")) {
+    debugState.showProbes = !debugState.showProbes;
+    applyDebugVisibility();
+  }
+}
+
+function applyGravityMode() {
+  world.gravity.y = debugState.moonGravity ? MOON_GRAVITY : GRAVITY;
+}
+
+function applyDebugVisibility() {
+  if (sensor) sensor.visible = debugState.showProbes;
+  if (!boar) return;
+
+  for (const e of boar) {
+    if (e.footProbe) e.footProbe.visible = debugState.showProbes;
+    if (e.frontProbe) e.frontProbe.visible = debugState.showProbes;
+    if (e.groundProbe) e.groundProbe.visible = debugState.showProbes;
+  }
+}
+
+function drawDebugOverlay() {
+  if (!debugState.enabled) return;
+
+  camera.off();
+  drawingContext.imageSmoothingEnabled = false;
+
+  push();
+  noStroke();
+  fill(0, 160);
+  rect(4, 132, 232, 56);
+  pop();
+
+  drawOutlinedTextToGfx(window, "DEBUG", 10, 136, "#ffffff");
+  drawOutlinedTextToGfx(
+    window,
+    `G GRAVITY ${debugState.moonGravity ? "MOON" : "EARTH"}`,
+    10,
+    148,
+    debugState.moonGravity ? "#8bf5ff" : "#ffdc00",
+  );
+  drawOutlinedTextToGfx(
+    window,
+    `I INVINCIBLE ${debugState.invincible ? "ON" : "OFF"}`,
+    10,
+    160,
+    debugState.invincible ? "#7dff8a" : "#ffffff",
+  );
+  drawOutlinedTextToGfx(
+    window,
+    `P PROBES ${debugState.showProbes ? "ON" : "OFF"}`,
+    10,
+    172,
+    debugState.showProbes ? "#ff7bf1" : "#ffffff",
+  );
+
+  camera.on();
+}
+
 // is player grounded
 function isPlayerGrounded() {
   return (
@@ -639,7 +725,7 @@ function rescueLeaf(player, leaf) {
 
 // --- DAMAGE FROM FIRE ---
 function takeDamageFromFire(player, fire) {
-  if (invulnTimer > 0 || dead) return;
+  if (debugState.invincible || invulnTimer > 0 || dead) return;
 
   health = max(0, health - 1);
   if (health <= 0) pendingDeath = true;
@@ -659,7 +745,7 @@ function takeDamageFromFire(player, fire) {
 // --- BOAR: HIT PLAYER ---
 function playerHitByBoar(player, e) {
   if (e.dying || e.dead) return;
-  if (invulnTimer > 0 || dead) return;
+  if (debugState.invincible || invulnTimer > 0 || dead) return;
 
   health = max(0, health - 1);
   if (health <= 0) pendingDeath = true;
@@ -850,6 +936,7 @@ function drawLevelSelect() {
   drawOutlinedTextToGfx(window, "Choose Level", 52, 62, "#ffffff");
   drawOutlinedTextToGfx(window, "Press 1 for Level 1", 30, 82, "#ffdc00");
   drawOutlinedTextToGfx(window, "Press 2 for Level 2", 30, 96, "#8bf5ff");
+  drawOutlinedTextToGfx(window, "Press ` for Debug", 36, 116, "#7dff8a");
 
   camera.on();
 }
@@ -1101,6 +1188,8 @@ function beginSelectedLevel(levelIndex) {
   camera.y = undefined;
 
   rebuildWorldFromLevel();
+  applyGravityMode();
+  applyDebugVisibility();
   lastScore = lastHealth = lastMaxHealth = null;
 }
 
@@ -1130,6 +1219,8 @@ function advanceToNextLevel() {
   camera.y = undefined;
 
   rebuildWorldFromLevel();
+  applyGravityMode();
+  applyDebugVisibility();
   lastScore = lastHealth = lastMaxHealth = null;
 }
 
@@ -1160,7 +1251,7 @@ function rebuildWorldFromLevel() {
 }
 
 function makeWorld() {
-  world.gravity.y = GRAVITY;
+  applyGravityMode();
 
   // --- ENEMIES (boar spawned from 'b') ---
   boar = new Group();
@@ -1235,8 +1326,13 @@ function makeWorld() {
   // build world from tilemap
   new Tiles(level, 0, 0, TILE_W, TILE_H);
 
+  // Invisible ceiling keeps jump tests and moon gravity from letting actors leave the map.
+  ceiling = new Sprite(levelWidth() / 2, CEILING_Y, levelWidth(), TILE_H);
+  ceiling.collider = "static";
+  ceiling.visible = false;
+
   // --- PLAYER ---
-  player = new Sprite(FRAME_W, PLAYER_START_Y, FRAME_W, FRAME_H);
+  player = new Sprite(FRAME_W, playerStartY(), FRAME_W, FRAME_H);
   player.spriteSheet = playerImg;
   player.rotationLock = true;
 
@@ -1257,6 +1353,7 @@ function makeWorld() {
   player.overlaps(fire, takeDamageFromFire);
   player.overlaps(leaf, rescueLeaf);
   player.collides(boar, playerHitByBoar);
+  player.collides(ceiling);
 
   // --- GROUND SENSOR (query-only) ---
   sensor = new Sprite();
@@ -1315,6 +1412,7 @@ function makeWorld() {
 
     e.mirror.x = e.dir === -1;
     e.ani = "run";
+    e.collides(ceiling);
   }
 
   // attach turning rules (L/R/[ ])
@@ -1326,6 +1424,8 @@ function makeWorld() {
     { img: bgMidImg, speed: 0.4 },
     { img: bgForeImg, speed: 0.6 },
   ];
+
+  applyDebugVisibility();
 }
 
 // --- NEW: audio helpers ---
